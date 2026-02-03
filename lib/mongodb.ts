@@ -1,12 +1,11 @@
 import mongoose from "mongoose";
 
-// Extend the global NodeJS namespace to include mongoose cache
+// Declare HMR‑persisted globals (dev only). In prod these are unused.
 declare global {
   // eslint-disable-next-line no-var
-  var mongoose: {
-    conn: mongoose.Connection | null;
-    promise: Promise<mongoose.Connection> | null;
-  };
+  var _mongoConn: mongoose.Connection | null | undefined;
+  // eslint-disable-next-line no-var
+  var _mongoPromise: Promise<mongoose.Connection> | null | undefined;
 }
 
 // Get MongoDB URI from environment variables
@@ -19,49 +18,65 @@ if (!MONGODB_URI) {
   );
 }
 
-/**
- * Global cache to store the connection and promise
- * This prevents multiple connections during hot reloading in development
- */
-let cached = global.mongoose;
+// Narrow type for use below (after runtime guard above)
+const MONGODB_URI_STR: string = MONGODB_URI as string;
 
-if (!cached) {
-  cached = global.mongoose = { conn: null, promise: null };
-}
+// Module-level fallbacks (used in production to keep behavior unchanged)
+let moduleConn: mongoose.Connection | null = null;
+let modulePromise: Promise<mongoose.Connection> | null = null;
 
 /**
  * Establishes and returns a cached MongoDB connection
  * @returns {Promise<mongoose.Connection>} MongoDB connection instance
  */
 async function connectDB(): Promise<mongoose.Connection> {
+  const useGlobal = process.env.NODE_ENV !== "production";
+
+  // Initialize globals in dev so they survive HMR reloads
+  if (useGlobal) {
+    if (globalThis._mongoConn === undefined) globalThis._mongoConn = null;
+    if (globalThis._mongoPromise === undefined) globalThis._mongoPromise = null;
+  }
+
+  const getConn = () => (useGlobal ? globalThis._mongoConn! : moduleConn);
+  const setConn = (c: mongoose.Connection | null) => {
+    if (useGlobal) globalThis._mongoConn = c;
+    else moduleConn = c;
+  };
+  const getPromise = () => (useGlobal ? globalThis._mongoPromise! : modulePromise);
+  const setPromise = (p: Promise<mongoose.Connection> | null) => {
+    if (useGlobal) globalThis._mongoPromise = p;
+    else modulePromise = p;
+  };
+
   // Return existing connection if available
-  if (cached.conn) {
-    return cached.conn;
+  const existingConn = getConn();
+  if (existingConn) {
+    return existingConn;
   }
 
   // Create new connection promise if not exists
-  if (!cached.promise) {
+  if (!getPromise()) {
     const options = {
       bufferCommands: false, // Disable mongoose buffering
-    };
+    } as const;
 
-    cached.promise = mongoose
-      .connect(MONGODB_URI, options)
-      .then((mongooseInstance) => {
-        return mongooseInstance.connection;
-      });
+    const promise = mongoose.connect(MONGODB_URI_STR, options).then((mongooseInstance) => {
+      return mongooseInstance.connection;
+    });
+    // Persist the promise to survive HMR
+    setPromise(promise);
   }
 
   try {
-    // Await the connection promise and cache the connection
-    cached.conn = await cached.promise;
+    const conn = await getPromise()!;
+    setConn(conn);
+    return conn;
   } catch (error) {
-    // Reset promise on error to allow retry
-    cached.promise = null;
+    // Clear persisted promise on failure so subsequent retries work
+    setPromise(null);
     throw error;
   }
-
-  return cached.conn;
 }
 
 export default connectDB;

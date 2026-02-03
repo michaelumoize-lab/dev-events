@@ -1,4 +1,6 @@
 import { Schema, model, models, Document, Types } from "mongoose";
+// Ensure Event schema is registered to avoid MissingSchemaError during hooks
+import Event from "./event.model";
 
 // TypeScript interface for Booking document
 export interface IBooking extends Document {
@@ -41,31 +43,51 @@ BookingSchema.index({ eventId: 1, email: 1 }, { unique: true });
  * Pre-save hook to validate that the referenced event exists
  * Prevents orphaned bookings by checking Event collection
  */
-BookingSchema.pre("save", async function (next) {
+BookingSchema.pre("save", async function () {
   // Only validate eventId if it's modified or new document
   if (this.isModified("eventId")) {
-    try {
-      // Check if the referenced event exists
-      const Event = models.Event || model("Event");
-      const eventExists = await Event.findById(this.eventId);
-
-      if (!eventExists) {
-        return next(
-          new Error(
-            `Event with ID ${this.eventId} does not exist. Cannot create booking for non-existent event.`
-          )
-        );
-      }
-    } catch (error) {
-      return next(
-        new Error(
-          `Failed to validate event reference: ${error instanceof Error ? error.message : "Unknown error"}`
-        )
+    // Check if the referenced event exists
+    const eventExists = await Event.findById((this as any).eventId);
+    if (!eventExists) {
+      throw new Error(
+        `Event with ID ${(this as any).eventId} does not exist. Cannot create booking for non-existent event.`
       );
     }
   }
+});
 
-  next();
+/**
+ * Pre-findOneAndUpdate hook to validate that the referenced event exists
+ * Prevents orphaned bookings during updates
+ */
+BookingSchema.pre("findOneAndUpdate", async function () {
+  // Ensure setters run during updates (Mongoose 9: set at query level)
+  this.setOptions({ runSettersOnQuery: true });
+
+  const update = this.getUpdate() as any;
+  // Only validate eventId if it's being updated
+  if (update && update.eventId) {
+    const eventExists = await Event.findById(update.eventId);
+    if (!eventExists) {
+      throw new Error(
+        `Event with ID ${update.eventId} does not exist. Cannot update booking to a non-existent event.`
+      );
+    }
+  }
+});
+
+// Ensure setters also run for updateOne operations and validate eventId if present
+BookingSchema.pre("updateOne", async function () {
+  this.setOptions({ runSettersOnQuery: true });
+  const update = this.getUpdate() as any;
+  if (update && update.eventId) {
+    const eventExists = await Event.findById(update.eventId);
+    if (!eventExists) {
+      throw new Error(
+        `Event with ID ${update.eventId} does not exist. Cannot update booking to a non-existent event.`
+      );
+    }
+  }
 });
 
 // Use existing model if available (prevents recompilation in development)
