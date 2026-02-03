@@ -65,12 +65,13 @@ BookingSchema.pre("findOneAndUpdate", async function () {
   this.setOptions({ runSettersOnQuery: true });
 
   const update = this.getUpdate() as any;
-  // Only validate eventId if it's being updated
-  if (update && update.eventId) {
-    const eventExists = await Event.findById(update.eventId);
+  // Check both direct field and $set operator
+  const newEventId = update?.eventId ?? update?.$set?.eventId;
+  if (newEventId) {
+    const eventExists = await Event.findById(newEventId);
     if (!eventExists) {
       throw new Error(
-        `Event with ID ${update.eventId} does not exist. Cannot update booking to a non-existent event.`
+        `Event with ID ${newEventId} does not exist. Cannot update booking to a non-existent event.`
       );
     }
   }
